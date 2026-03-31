@@ -1,0 +1,164 @@
+---
+title: "Global Health Insights Explorer"
+subtitle: "MVP aligned with proposal"
+author: "Vera Zhang"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+## Project overview
+
+This minimum viable product (MVP) retrieves **global health indicator data directly from the World Bank API**, cleans it in R, visualizes trends across countries, and produces a short plain-language interpretation. It is a first working version of the product proposed in the course proposal.
+
+## What this page does
+
+- Pulls data from the **World Bank Open Data API**
+- Compares **life expectancy at birth** across selected countries
+- Displays an interactive plot
+- Generates a concise interpretation based on the most recent available values
+
+```{r}
+#| label: setup
+#| include: false
+
+library(httr2)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(glue)
+library(scales)
+
+country_codes <- c("US", "CN", "BR")
+country_names <- c(
+  US = "United States",
+  CN = "China",
+  BR = "Brazil"
+)
+
+indicator_code <- "SP.DYN.LE00.IN"
+indicator_name <- "Life expectancy at birth, total (years)"
+start_year <- 2000
+end_year <- 2023
+
+fetch_world_bank_indicator <- function(countries, indicator, start_year = 2000, end_year = 2023) {
+  url <- glue(
+    "https://api.worldbank.org/v2/country/{paste(countries, collapse = ';')}/indicator/{indicator}?format=json&per_page=20000"
+  )
+
+  resp <- request(url) |>
+    req_perform()
+
+  txt <- resp_body_string(resp)
+  parsed <- fromJSON(txt, flatten = TRUE)
+
+  if (length(parsed) < 2 || is.null(parsed[[2]])) {
+    stop("No data returned from the World Bank API.")
+  }
+
+  dat <- as_tibble(parsed[[2]]) |>
+    transmute(
+      country_code = countryiso3code,
+      country = country.value,
+      year = as.integer(date),
+      value = as.numeric(value)
+    ) |>
+    filter(!is.na(value), year >= start_year, year <= end_year)
+
+  dat
+}
+
+wb_raw <- fetch_world_bank_indicator(country_codes, indicator_code, start_year, end_year)
+
+wb_data <- wb_raw |>
+  mutate(
+    country = recode(country_code,
+      USA = "United States",
+      CHN = "China",
+      BRA = "Brazil",
+      .default = country
+    )
+  ) |>
+  arrange(country, year)
+
+latest_data <- wb_data |>
+  group_by(country) |>
+  filter(year == max(year, na.rm = TRUE)) |>
+  ungroup() |>
+  arrange(desc(value))
+
+summary_tbl <- latest_data |>
+  select(country, year, value) |>
+  rename(`Most recent year` = year, `Life expectancy` = value)
+```
+
+## Data preview
+
+```{r}
+summary_tbl
+```
+
+## Interactive trend plot
+
+```{r}
+p <- ggplot(wb_data, aes(x = year, y = value, color = country)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.8) +
+  labs(
+    title = "Life expectancy trends",
+    subtitle = "World Bank API data",
+    x = "Year",
+    y = "Life expectancy at birth (years)",
+    color = "Country"
+  ) +
+  theme_minimal(base_size = 12)
+
+p
+```
+
+## Automatically generated interpretation
+
+```{r}
+top_country <- latest_data$country[1]
+top_value <- latest_data$value[1]
+top_year <- latest_data$year[1]
+
+bottom_country <- latest_data$country[nrow(latest_data)]
+bottom_value <- latest_data$value[nrow(latest_data)]
+
+change_tbl <- wb_data |>
+  group_by(country) |>
+  summarise(
+    first_year = min(year, na.rm = TRUE),
+    last_year = max(year, na.rm = TRUE),
+    first_value = value[year == first_year][1],
+    last_value = value[year == last_year][1],
+    change = last_value - first_value,
+    .groups = "drop"
+  ) |>
+  arrange(desc(change))
+
+largest_gain_country <- change_tbl$country[1]
+largest_gain_value <- change_tbl$change[1]
+
+cat(glue(
+  'Using the most recent available World Bank data, **{top_country}** had the highest life expectancy among the selected countries at **{round(top_value, 1)} years** in **{top_year}**, while **{bottom_country}** had the lowest at **{round(bottom_value, 1)} years**. From **{start_year}** to **{end_year}**, **{largest_gain_country}** showed the largest overall increase, with life expectancy rising by approximately **{round(largest_gain_value, 1)} years**. This MVP demonstrates the core pipeline proposed for the final project: API retrieval, data cleaning, visualization, and automated interpretation.'
+))
+```
+
+## Notes for next iteration
+
+This MVP is intentionally simple so that the pipeline works end to end. The next version can extend the proposal by adding:
+
+1. User-selected countries and indicators
+2. Additional World Bank health indicators
+3. A true GenAI summary step using Gemini or OpenAI API
+4. More comparative views and richer analytical components
+
+## Reproducibility
+
+```{r}
+sessionInfo()
+```
